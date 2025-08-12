@@ -1,40 +1,68 @@
 #!/usr/bin/env bash
-# githold — create and link a new GitHub/Lab repo via CLI or manual instructions
+# githold — create and link a new GitHub repo via CLI or manual instructions
 # Bash 3.2+ compatible
 
 set -euo pipefail
 
-# Defaults
-DEFAULT_GITHUB_NAME="YourGitHubUsernameOrOrg"     # override with --name
-DEFAULT_SSH_IDENTITY="${SSH_IDENTITY:-github.com}"# override with --ssh
-DEFAULT_PRIVATE="yes"
-AUTO_YES="no"
+# ==================== DEFAULTS ==================== #
+DEFAULT_GITHUB_NAME="YourGitHubUsernameOrOrg"       # override with --name
+DEFAULT_SSH_IDENTITY="${SSH_IDENTITY:-github.com}"  # override with --ssh
+DEFAULT_PRIVATE="yes"                                # --public to flip
+# =================================================== #
+
+# colors
+CLR_RESET="$(printf '\033[0m')"
+CLR_CYAN_B="$(printf '\033[1;36m')"
+CLR_GREEN_B="$(printf '\033[1;32m')"
+CLR_WHITE_B="$(printf '\033[1;37m')"
+
+hr(){ local cols; cols=$(tput cols 2>/dev/null || echo 80); printf "%s\n" "$(printf '%*s' "$cols" '' | tr ' ' '─')"; }
 
 die(){ echo "ERR: $*" >&2; exit 1; }
 
 usage(){
   cat <<USAGE
 Usage: $0 <repo-name>
-       [--dir DIRNAME]       # local directory name (defaults to repo name)
-       [--name GITHUB_USER_OR_ORG]
-       [--ssh SSH_HOST_ALIAS_OR_DOMAIN]
-       [--private|--public]
-       [--yes]               # skip confirmation
-Notes:
-  - Requires GitHub CLI (gh) for automatic remote creation.
-  - If gh is missing, script will output manual creation instructions.
+       [--dir DIRNAME]         # local directory name (defaults to repo name)
+       [--name USER_OR_ORG]    # GitHub username/org (default: ${DEFAULT_GITHUB_NAME})
+       [--ssh SSH_HOST]        # SSH alias/domain (default: ${DEFAULT_SSH_IDENTITY})
+       [--private|--public]    # default is private
+       [--yes]                 # skip confirmation
+       [--quiet]               # suppress banner
 USAGE
   exit 1
+}
+
+print_banner(){
+  printf "%s" "$CLR_CYAN_B"
+  cat <<'BANNER'
+
+ ______     __     ______                  
+/\  ___\   /\ \   /\__  _\                 
+\ \ \__ \  \ \ \  \/_/\ \/                 
+ \ \_____\  \ \_\    \ \_\                 
+  \/_____/   \/_/     \/_/                 
+                                           
+ __  __     ______     __         _____    
+/\ \_\ \   /\  __ \   /\ \       /\  __-.  
+\ \  __ \  \ \ \/\ \  \ \ \____  \ \ \/\ \ 
+ \ \_\ \_\  \ \_____\  \ \_____\  \ \____- 
+  \/_/\/_/   \/_____/   \/_____/   \/____/ 
+
+BANNER
+  printf "%s" "$CLR_RESET"
 }
 
 # --------- parse ---------
 [ $# -ge 1 ] || usage
 REPO_NAME="$1"; shift
-DIR_NAME=""        # local folder
 
+DIR_NAME=""
 GITHUB_NAME="$DEFAULT_GITHUB_NAME"
 SSH_ID="$DEFAULT_SSH_IDENTITY"
 PRIVATE="$DEFAULT_PRIVATE"
+AUTO_YES="no"
+QUIET="no"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -44,6 +72,7 @@ while [ $# -gt 0 ]; do
     --private) PRIVATE="yes"; shift;;
     --public) PRIVATE="no"; shift;;
     --yes) AUTO_YES="yes"; shift;;
+    --quiet) QUIET="yes"; shift;;
     -h|--help) usage;;
     *) die "Unknown arg: $1";;
   esac
@@ -60,13 +89,18 @@ case "$REPO_NAME" in *[\\/:]*|"") die "invalid repo name" ;; esac
 
 REPO_HTTPS="https://github.com/${GITHUB_NAME}/${REPO_NAME}"
 REPO_SSH="git@${SSH_ID}:${GITHUB_NAME}/${REPO_NAME}.git"
+VISIBILITY_STR=$([ "$PRIVATE" = "yes" ] && echo "private" || echo "public")
 
-# --------- summary ---------
+# --------- banner ---------
+[ "$QUIET" = "yes" ] || print_banner
+
+# --------- plan + confirm ---------
+hr
 echo "Plan:"
 printf "  Local Dir:    %s\n" "$DIR_NAME"
 printf "  Repo Name:    %s\n" "$REPO_NAME"
 printf "  GitHub Name:  %s\n" "$GITHUB_NAME"
-printf "  Private:      %s\n" "$PRIVATE"
+printf "  Visibility:   %s\n" "$VISIBILITY_STR"
 printf "  HTTPS URL:    %s\n" "$REPO_HTTPS"
 printf "  SSH URL:      %s\n" "$REPO_SSH"
 echo
@@ -81,24 +115,41 @@ if [ "$AUTO_YES" != "yes" ]; then
   fi
 fi
 
-# --------- create local dir + git init ---------
+# --------- local init ---------
 mkdir -p "$DIR_NAME"
 cd "$DIR_NAME"
 git init -q
+git checkout -q -b main 2>/dev/null || true
 
-# --------- try to create remote ---------
+# --------- remote create or manual ---------
 if command -v gh >/dev/null 2>&1; then
-  VISIBILITY="--private"
-  [ "$PRIVATE" = "no" ] && VISIBILITY="--public"
-  gh repo create "${GITHUB_NAME}/${REPO_NAME}" $VISIBILITY --source=. --remote=origin --push || {
-    echo "gh repo create failed; check credentials."
-    exit 1
+  VIS_ARG=$([ "$PRIVATE" = "yes" ] && echo --private || echo --public)
+  # Create remote and connect this directory; push only if something to push
+  if git rev-parse --verify HEAD >/dev/null 2>&1; then
+    : # repo just initialized; no commits yet
+  fi
+  gh repo create "${GITHUB_NAME}/${REPO_NAME}" $VIS_ARG --source=. --remote=origin --push >/dev/null 2>&1 || {
+    # fallback: try without push (empty repo case)
+    gh repo create "${GITHUB_NAME}/${REPO_NAME}" $VIS_ARG --confirm >/dev/null
+    if git remote get-url origin >/dev/null 2>&1; then
+      git remote set-url origin "$REPO_SSH"
+    else
+      git remote add origin "$REPO_SSH"
+    fi
   }
   echo "Remote repo created: $REPO_HTTPS"
 else
+  # manual path
+  if git remote get-url origin >/dev/null 2>&1; then
+    git remote set-url origin "$REPO_SSH"
+  else
+    git remote add origin "$REPO_SSH"
+  fi
   echo "GitHub CLI not found."
   echo "Create the repo manually at: $REPO_HTTPS"
-  git remote add origin "$REPO_SSH"
   echo "Then push with:"
+  echo "  git add . && git commit -m \"init\""
   echo "  git push -u origin HEAD"
 fi
+
+printf "%sDone.%s\n" "$CLR_GREEN_B" "$CLR_RESET"
