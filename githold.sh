@@ -33,6 +33,13 @@ USAGE
   exit 1
 }
 
+
+clear_screen(){
+  # clear screen
+  printf '\033[2J\033[H'
+}
+
+
 print_banner(){
   printf "%s" "$CLR_CYAN_B"
   cat <<'BANNER'
@@ -92,7 +99,8 @@ REPO_SSH="git@${SSH_ID}:${GITHUB_NAME}/${REPO_NAME}.git"
 VISIBILITY_STR=$([ "$PRIVATE" = "yes" ] && echo "private" || echo "public")
 
 # --------- banner ---------
-[ "$QUIET" = "yes" ] || print_banner
+[ "$QUIET" = "yes" ] || print_banner;
+clear_screen;
 
 # --------- plan + confirm ---------
 hr
